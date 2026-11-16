@@ -1,8 +1,9 @@
 import crypto from "crypto";
+import * as argon2 from "@node-rs/argon2";
 import { escapeHtml } from "./views";
 
 type PlainUser = { username: string; password: string; card: string };
-type SecureUser = { username: string; salt: string; hash: string; card: string };
+type SecureUser = { username: string; hash: string; card: string };
 
 const plainUsers: PlainUser[] = [];
 const secureUsers: SecureUser[] = [];
@@ -11,8 +12,10 @@ const key = process.env.DATA_KEY
     ? Buffer.from(process.env.DATA_KEY, "hex")
     : crypto.randomBytes(32);
 
-function hashPassword(password: string, salt: string): string {
-    return crypto.scryptSync(password, salt, 64).toString("hex");
+const pepper = process.env.PEPPER ?? crypto.randomBytes(32).toString("hex");
+
+function applyPepper(password: string): string {
+    return crypto.createHmac("sha256", pepper).update(password).digest("hex");
 }
 
 function encrypt(text: string): string {
@@ -34,7 +37,7 @@ function maskCard(card: string): string {
     return "**** **** **** " + card.slice(-4);
 }
 
-export function register(vulnerable: boolean, username: string, password: string, card: string): string {
+export async function register(vulnerable: boolean, username: string, password: string, card: string): Promise<string> {
     const digits = card.replace(/\s/g, "");
     if (!username || !password || !/^\d{13,19}$/.test(digits)) {
         return "Neispravni podaci. Broj kartice mora imati između 13 i 19 znamenki.";
@@ -48,13 +51,13 @@ export function register(vulnerable: boolean, username: string, password: string
         if (secureUsers.some((u) => u.username === username)) {
             return "Korisnik već postoji.";
         }
-        const salt = crypto.randomBytes(16).toString("hex");
-        secureUsers.push({ username, salt, hash: hashPassword(password, salt), card: encrypt(digits) });
+        const hash = await argon2.hash(applyPepper(password));
+        secureUsers.push({ username, hash, card: encrypt(digits) });
     }
     return `Korisnik ${username} je registriran.`;
 }
 
-export function login(vulnerable: boolean, username: string, password: string): string {
+export async function login(vulnerable: boolean, username: string, password: string): Promise<string> {
     const failed = "Pogrešno korisničko ime ili lozinka.";
     if (vulnerable) {
         const u = plainUsers.find((u) => u.username === username && u.password === password);
@@ -64,8 +67,7 @@ export function login(vulnerable: boolean, username: string, password: string): 
     if (!u) {
         return failed;
     }
-    const candidate = Buffer.from(hashPassword(password, u.salt), "hex");
-    if (!crypto.timingSafeEqual(candidate, Buffer.from(u.hash, "hex"))) {
+    if (!(await argon2.verify(u.hash, applyPepper(password)))) {
         return failed;
     }
     return `Prijava uspješna (${u.username}). Broj kartice: ${maskCard(decrypt(u.card))}`;
@@ -82,18 +84,20 @@ ${rows}
 </table>`;
     }
     const rows = secureUsers
-        .map((u) => `<tr><td>${escapeHtml(u.username)}</td><td>${u.salt}</td><td>${u.hash}</td><td>${u.card}</td></tr>`)
+        .map((u) => `<tr><td>${escapeHtml(u.username)}</td><td>${u.hash.split("$")[4]}</td><td>${u.hash}</td><td>${u.card}</td></tr>`)
         .join("\n");
     return `<table border="1">
-<tr><th>username</th><th>salt</th><th>password_hash (scrypt)</th><th>card (AES-256-GCM, iv:tag:ciphertext)</th></tr>
+<tr><th>username</th><th>salt</th><th>password_hash (argon2id, salt je ugrađen)</th><th>card (AES-256-GCM, iv:tag:ciphertext)</th></tr>
 ${rows}
 </table>`;
 }
 
-for (const [username, password, card] of [
-    ["ana", "ana123", "4111111111111111"],
-    ["marko", "lozinka", "5555555555554444"],
-]) {
-    register(true, username, password, card);
-    register(false, username, password, card);
+export async function seed(): Promise<void> {
+    for (const [username, password, card] of [
+        ["ana", "ana123", "4111111111111111"],
+        ["marko", "lozinka", "5555555555554444"],
+    ]) {
+        await register(true, username, password, card);
+        await register(false, username, password, card);
+    }
 }

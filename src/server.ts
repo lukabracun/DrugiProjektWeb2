@@ -3,11 +3,12 @@ import cookieParser from "cookie-parser";
 import crypto from "crypto";
 import { layout, toggle, escapeHtml, Settings } from "./views";
 import { comments, stolen, renderComments } from "./xss";
-import { register, login, renderDatabase } from "./sde";
+import { register, login, renderDatabase, seed } from "./sde";
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 
+app.set("trust proxy", 1);
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 
@@ -24,7 +25,7 @@ app.use((req, res, next) => {
     const sid = typeof existing === "string" && /^[a-f0-9]{32}$/.test(existing)
         ? existing
         : crypto.randomBytes(16).toString("hex");
-    res.cookie("sessionId", sid, { httpOnly: !s.xss, sameSite: "lax" });
+    res.cookie("sessionId", sid, { httpOnly: !s.xss, secure: req.secure, sameSite: "lax" });
     if (!s.xss) {
         res.setHeader("Content-Security-Policy", "default-src 'self'");
     }
@@ -62,7 +63,7 @@ ${renderComments(s.xss)}
 ana / ana123 ili marko / lozinka.
 Ispod forme prikazan je sadržaj baze, odnosno ono što napadač vidi ako ukrade bazu.
 Kad je ranjivost uključena, lozinke i brojevi kartica spremaju se i prikazuju kao čisti tekst.
-Kad je isključena, lozinke se spremaju kao scrypt hash sa salt, brojevi kartica šifrirani su algoritmom AES-256-GCM,
+Kad je isključena, lozinke se spremaju kao argon2id hash sa saltom i pepperom, brojevi kartica šifrirani su algoritmom AES-256-GCM,
 a nakon prijave prikazuje se samo maskirani broj kartice.
 Svaki način rada ima vlastitu bazu.</p>
 ${toggle("sde", s.sde)}
@@ -83,9 +84,9 @@ ${renderDatabase(s.sde)}
 `));
 });
 
-app.post("/sde/register", (req, res) => {
+app.post("/sde/register", async (req, res) => {
     const s = readSettings(req);
-    const msg = register(
+    const msg = await register(
         s.sde,
         String(req.body?.username ?? "").trim(),
         String(req.body?.password ?? ""),
@@ -94,9 +95,9 @@ app.post("/sde/register", (req, res) => {
     res.redirect("/?sdeMsg=" + encodeURIComponent(msg));
 });
 
-app.post("/sde/login", (req, res) => {
+app.post("/sde/login", async (req, res) => {
     const s = readSettings(req);
-    const msg = login(s.sde, String(req.body?.username ?? "").trim(), String(req.body?.password ?? ""));
+    const msg = await login(s.sde, String(req.body?.username ?? "").trim(), String(req.body?.password ?? ""));
     res.redirect("/?sdeMsg=" + encodeURIComponent(msg));
 });
 
@@ -139,6 +140,8 @@ ${stolen.length ? `<ul>\n${rows}\n</ul>` : "<p>Još ništa nije ukradeno.</p>"}
 `));
 });
 
-app.listen(port, () => {
-    console.log(`Server: http://localhost:${port}`);
+seed().then(() => {
+    app.listen(port, () => {
+        console.log(`Server: http://localhost:${port}`);
+    });
 });
